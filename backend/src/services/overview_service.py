@@ -76,6 +76,7 @@ def overview(db: Session) -> dict:
         "core_reports": core_reports,
         "conflicts_total": summary["conflicts_total"],
         "cycles_total": summary["cycles_total"],
+        "cycles_resolved": summary["cycles_resolved"],
         "parse_error_count": summary["parse_error_count"],
         "high_risk": severity_counter.get("high", 0),
         "pending_changes": pending_changes,
@@ -116,6 +117,20 @@ def overview(db: Session) -> dict:
             for item in summary["conflicts"][:5]
         ],
         "cycle_paths": [" → ".join(item["path"]) for item in summary["cycles"]],
+        "cycle_records": [
+            {
+                "record_no": item["record_no"],
+                "status": item["status"],
+                "path": " → ".join(item["path"]),
+                "severity": item["severity"],
+                "score": item["score"],
+                "first_seen_at": item["first_seen_at"],
+                "first_seen_run": item["first_seen_run"],
+                "last_seen_at": item["last_seen_at"],
+                "last_seen_run": item["last_seen_run"],
+            }
+            for item in summary["cycles"]
+        ],
         "latest_run": (
             {
                 "id": latest_run.id,

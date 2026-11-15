@@ -5,7 +5,9 @@
 - reports_by_metric: {metric_code: [{code, name, is_core, weight, owner}]}
 
 规则：
-- 图 `metric -> 引用指标`；Tarjan 求 SCC，长度 > 1 或自环即为环，输出真实环路径；
+- 图 `metric -> 引用指标`；Tarjan 求 SCC，长度 > 1 或自环即为环；
+- 一个 SCC 内可能有多条基本环，逐条枚举（不再合并成一条代表路径），
+  每条环用「环上指标 + 环内引用边」生成 fingerprint，供处置记录识别同一问题；
 - 同名指标（name 相同）但公式签名（字段/过滤/聚合/引用）不同 -> conflict；
 - 影响面 = 下游报表数按权重（核心报表 ×3）求和，score >= 8 high / >= 3 medium / 否则 low。
 
@@ -13,11 +15,15 @@
 """
 from __future__ import annotations
 
-from collections import deque
+import hashlib
+import json
 
 from src.constants.enums import REPORT_WEIGHT_CORE, REPORT_WEIGHT_NORMAL, Severity
 
 SEVERITY_THRESHOLDS = ((8, Severity.HIGH.value), (3, Severity.MEDIUM.value))
+
+# 单个 SCC 内枚举基本环的上限（防御病态稠密图组合爆炸；超出部分按字典序截断，结果仍确定）
+MAX_CYCLES_PER_COMPONENT = 64
 
 
 def severity_of(score: int) -> str:
@@ -112,26 +118,46 @@ def tarjan_scc(dep_map: dict[str, list[str]]) -> list[list[str]]:
     return sorted(result)
 
 
-def _shortest_cycle(start: str, dep_map: dict[str, list[str]], component: set[str]) -> list[str]:
-    """在 SCC 内找从 start 回到 start 的最短环（等长时取字典序最小）。"""
-    best: list[str] | None = None
-    queue: deque[tuple[str, list[str]]] = deque([(start, [start])])
-    while queue:
-        node, path = queue.popleft()
-        if best is not None and len(path) >= len(best):
-            continue
-        for neighbour in dep_map.get(node, []):
-            if neighbour not in component:
-                continue
-            if neighbour == start:
-                candidate = path + [start]
-                if best is None or (len(candidate), candidate) < (len(best), best):
-                    best = candidate
-                continue
-            if neighbour in path:
-                continue
-            queue.append((neighbour, path + [neighbour]))
-    return best or [start, start]
+def _elementary_cycles(dep_map: dict[str, list[str]], component: list[str]) -> list[list[str]]:
+    """枚举 SCC 内全部基本环（同一连通区域里的每条环都单独输出，不再合并）。
+
+    Johnson 去重技巧：每个环只由环上字典序最小的节点作为起点、且只允许经过
+    不小于起点的节点，因此每条基本环恰好输出一次。返回节点序列（不含回到起点
+    的重复尾节点），按 (长度, 序列) 排序，确定可复现。
+    """
+    comp_set = set(component)
+    found: list[list[str]] = []
+    for start in sorted(comp_set):
+        allowed = {node for node in comp_set if node >= start}
+        stack: list[tuple[str, list[str]]] = [(start, [start])]
+        while stack:
+            if len(found) >= MAX_CYCLES_PER_COMPONENT:
+                break
+            node, path = stack.pop()
+            for neighbour in dep_map.get(node, []):
+                if neighbour == start:
+                    found.append(path)
+                elif neighbour in allowed and neighbour not in path:
+                    stack.append((neighbour, path + [neighbour]))
+    found.sort(key=lambda nodes: (len(nodes), nodes))
+    return found
+
+
+def cycle_fingerprint(members: list[str], edges: list[tuple[str, str]]) -> str:
+    """同一环问题的识别键：环上指标集合 + 环内引用边集合。
+
+    与路径起点/方向表示无关：同一问题换了个起点输出，指纹不变；
+    环上指标或引用关系变了（口径调整），指纹随之变化，按新问题建档。
+    """
+    payload = json.dumps(
+        {
+            "members": sorted(members),
+            "edges": sorted(f"{src}->{dst}" for src, dst in edges),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def find_cycles(metrics: list[dict], reports_by_metric: dict[str, list[dict]]) -> list[dict]:
@@ -142,26 +168,31 @@ def find_cycles(metrics: list[dict], reports_by_metric: dict[str, list[dict]]) -
         is_cycle = len(component) > 1 or any(code in dep_map.get(code, []) for code in component)
         if not is_cycle:
             continue
-        members = set(component)
-        start = min(component)
-        path = _shortest_cycle(start, dep_map, members)
-        reports = _downstream_reports(sorted(members), reports_by_metric)
-        impact = impact_payload(reports)
-        cycles.append(
-            {
-                "id": "cycle-" + "-".join(path[:-1]),
-                "path": path,
-                "length": len(path) - 1,
-                "members": sorted(members),
-                "metric_names": [by_code[code]["name"] for code in path[:-1] if code in by_code],
-                "severity": impact["severity"],
-                "score": impact["score"],
-                "impact": impact,
-                "suggestion": "在环上任选一个指标改用上游聚合字段，打断引用链后再跑一次校验。",
-                "summary": f"检测到 {len(path) - 1} 个指标的循环引用：{' → '.join(path)}",
-            }
-        )
-    cycles.sort(key=lambda item: (-item["length"], item["id"]))
+        component_members = sorted(component)
+        for nodes in _elementary_cycles(dep_map, component):
+            edges = [(nodes[index], nodes[(index + 1) % len(nodes)]) for index in range(len(nodes))]
+            fingerprint = cycle_fingerprint(nodes, edges)
+            path = nodes + [nodes[0]]
+            reports = _downstream_reports(sorted(nodes), reports_by_metric)
+            impact = impact_payload(reports)
+            cycles.append(
+                {
+                    "id": "cycle-" + fingerprint[:12],
+                    "fingerprint": fingerprint,
+                    "path": path,
+                    "length": len(nodes),
+                    "members": sorted(nodes),
+                    "edges": [{"from": src, "to": dst} for src, dst in sorted(edges)],
+                    "component": component_members,
+                    "metric_names": [by_code[code]["name"] for code in nodes if code in by_code],
+                    "severity": impact["severity"],
+                    "score": impact["score"],
+                    "impact": impact,
+                    "suggestion": "在环上任选一个指标改用上游聚合字段，打断引用链后再跑一次校验。",
+                    "summary": f"检测到 {len(nodes)} 个指标的循环引用：{' → '.join(path)}",
+                }
+            )
+    cycles.sort(key=lambda item: (-item["length"], item["fingerprint"]))
     return cycles
 
 

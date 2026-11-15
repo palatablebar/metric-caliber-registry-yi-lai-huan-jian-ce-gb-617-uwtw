@@ -38,10 +38,10 @@
 |---|---|---|---|---|
 | ① | 指标注册与检索 | 指标注册 | `metric_service` + `metric_controller` | `GET/POST /api/metrics`、`GET/PATCH /api/metrics/{id}` |
 | ② | 口径 DSL 解析（算法 A） | 指标注册（抽屉内「解析预览 / 保存新版本」） | `dsl_parser` + `formula_service` + `metric_controller` | `POST /api/metrics/{id}/parse`、`POST /api/metrics/{id}/formulas` |
-| ③ | 依赖图与环检测（算法 B） | 依赖图 | `graph_analysis` + `graph_service` + `dependency_service` + `dependency_controller` | `GET /api/graph`、`GET /api/cycles`、`GET /api/dependencies` |
+| ③ | 依赖图与环检测（算法 B） | 依赖图 | `graph_analysis` + `graph_service` + `cycle_record_service` + `dependency_service` + `dependency_controller` | `GET /api/graph`、`GET /api/cycles`、`GET /api/cycles/{record_no}`、`GET /api/dependencies` |
 | ④ | 口径冲突与影响面（算法 B） | 冲突与影响面 | `graph_analysis` + `graph_service` + `conflict_controller` | `GET /api/conflicts`、`GET /api/conflicts/{id}`、`GET /api/impact` |
 | ⑤ | 变更单与审批 | 变更单与导出 | `change_service` + `change_controller` | `GET/POST /api/change-requests`、`PATCH /api/change-requests/{id}` |
-| ⑥ | 报表登记与导出 | 变更单与导出（导出卡片）/ 冲突页导出按钮 | `report_service` + `export_service` + `export_controller` | `GET /api/reports`、`GET /api/exports/{metrics,conflicts,change-requests,runs}.csv` |
+| ⑥ | 报表登记与导出 | 变更单与导出（导出卡片）/ 冲突页导出按钮 | `report_service` + `export_service` + `export_controller` | `GET /api/reports`、`GET /api/exports/{metrics,conflicts,cycles,change-requests,runs}.csv` |
 
 横切能力（不计入业务模块）：登录（JWT）、审计、限流、worker 心跳、总览。
 
@@ -55,7 +55,7 @@
 | `Report` 报表 | `reports` | `models/report.py` | 只读出参（dict） | `report_service` | `report_controller` / `routes/reports.py` | `pages/graph.js` / `pages/conflicts.js` |
 | `ChangeRequest` 变更单 | `change_requests` | `models/change_request.py` | `schemas/change.py` | `change_service` | `change_controller` / `routes/change_requests.py` | `pages/changes.js` |
 
-横切表：`users`、`audit_logs`、`runs`（校验运行）。
+横切表：`users`、`audit_logs`、`runs`（校验运行）、`cycle_records` + `cycle_record_revisions` + `cycle_record_events`（环处置台账，只追加不覆盖）。
 
 ## 5. 两个算法（Python 真算，结果进页面与导出）
 
@@ -71,10 +71,22 @@ UNBALANCED_PAREN / SELF_REFERENCE / NO_FIELD`。
 
 ### 算法 B｜依赖环与冲突（`backend/src/services/graph_analysis.py`）
 
-- 图 `metric -> 引用指标`，**迭代式 Tarjan** 求 SCC；SCC 长度 > 1 或自环 → 环，并用 BFS 还原**真实环路径**（等长取字典序）；
+- 图 `metric -> 引用指标`，**迭代式 Tarjan** 求 SCC；SCC 长度 > 1 或自环 → 环；同一 SCC 内的**每条基本环单独枚举**（Johnson 去重，不再合并成一条代表路径）；
+- 每条环用「环上指标 + 环内引用边」生成 **fingerprint**，作为同一问题的识别键；
 - **冲突**：同名指标（`name` 相同）但签名不同 → `filter_diff / field_diff / agg_diff / dep_diff`；
 - **影响面** = 下游报表按权重求和（核心报表 ×3），`score >= 8` high、`>= 3` medium、否则 low；
 - 字段影响面：`impact_of_field('dwd.order.amount')` → 3 个指标 / 5 张报表 / 11 分 / high（验收数字）。
+
+### 环处置台账（`backend/src/services/cycle_record_service.py`）
+
+每次校验运行把检出的基本环与台账 reconcile（唯一写入口）：
+
+- **建档**：fingerprint 未知的环新建 `CYC-0001…` 记录，记首次发现的运行/时间；
+- **确认**：已建档的环刷新最后确认；口径/影响面有变化只追加内容版本（revision），旧版本永不覆盖；
+- **闭环**：本次未再检出的 open 记录自动闭环，记下闭环运行/操作人/**被打断的引用边**，成员、边与当时的下游影响面保留在记录里；
+- **重开**：已闭环的环同一 fingerprint 再现时重开，历史闭环结果留在事件流里；
+- **幂等**：fingerprint 唯一建档、事件按 `(record, run, event)` 去重、内容不变不追加版本——重新运行同一份关系快照不会重复追加记录；
+- **同一批状态**：总览 / 依赖图 / `cycles.csv` 导出统一读台账；图上已无环但记录仍未闭环时不算完成（改了口径没跑校验时依赖图会提示快照已过期）。
 
 ## 6. 页面（6）
 
@@ -83,9 +95,9 @@ UNBALANCED_PAREN / SELF_REFERENCE / NO_FIELD`。
 | 1 | `#/login` | 登录：卡片柜抽屉 + 索书单表单 |
 | 2 | `#/overview` | 总览：指标 / 报表 / 同名冲突 / 依赖环 / 高风险 / 待审批，按等级与类型的条形、环路径、最近运行、7 天趋势 |
 | 3 | `#/metrics` | 指标注册：筛选 + 目录列表 + 详情抽屉（DSL 编辑、算法 A 解析预览、保存新版本、注册新指标） |
-| 4 | `#/graph` | 依赖图：节点/边统计、SCC 环路径卡、节点表 + 展开抽屉、依赖边清单（可按边类型筛选） |
+| 4 | `#/graph` | 依赖图：节点/边统计、未闭环环处置卡、环处置台账（首次发现/最后确认/闭环结果）、节点表 + 展开抽屉、依赖边清单（可按边类型筛选） |
 | 5 | `#/conflicts` | 冲突与影响面：严重度/类型筛选、两份口径并排对照、差异明细、影响面、一键提交变更单 |
-| 6 | `#/changes` | 变更单与导出：跑校验、变更单列表 + 审批抽屉、4 张 CSV 导出、审计尾迹（admin） |
+| 6 | `#/changes` | 变更单与导出：跑校验、变更单列表 + 审批抽屉、5 张 CSV 导出、审计尾迹（admin） |
 
 共享组件（`site/js/ui.js`）：`table` / `drawer` / `filterBar` 同时被指标注册、依赖图、冲突、变更单四页复用。
 
@@ -98,6 +110,7 @@ UNBALANCED_PAREN / SELF_REFERENCE / NO_FIELD`。
 | 解析状态 `ok/error` | `ParseStatus` | `ENUMS.parseStatus` | 指标表/抽屉、依赖图节点、导出 |
 | 依赖边类型 `metric/field/report` | `DependencyKind` | `ENUMS.dependencyKind` | 依赖边清单筛选、导出 |
 | 冲突类型 `filter/field/agg/dep_diff` | `ConflictKind` | `ENUMS.conflictKind` | 冲突页筛选、总览差异类型、导出 |
+| 环状态/事件 `open/resolved`、`detected/confirmed/reopened/resolved` | `CycleStatus` / `CycleEvent` | `ENUMS.cycleStatus` / `ENUMS.cycleEvent` | 依赖图环台账、总览环卡片、导出 |
 | 变更类型/状态 | `ChangeKind` / `ChangeStatus` | `ENUMS.changeKind` / `ENUMS.changeStatus` | 变更单页筛选、抽屉、导出 |
 | 严重度 `high/medium/low` | `Severity` | `ENUMS.severity` | 冲突/环/变更单徽标、总览 |
 | 角色 `admin/analyst/viewer` | `Role` + `constants/roles.py` | `js/config.js::PERMISSIONS` | 导航、按钮、403 |

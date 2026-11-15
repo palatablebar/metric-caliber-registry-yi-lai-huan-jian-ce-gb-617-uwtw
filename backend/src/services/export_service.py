@@ -1,4 +1,4 @@
-"""导出服务：指标清单 / 冲突与影响面 / 变更单 / 运行记录（CSV，UTF-8 BOM）。"""
+"""导出服务：指标清单 / 冲突与影响面 / 环处置台账 / 变更单 / 运行记录（CSV，UTF-8 BOM）。"""
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from src.constants.enums import (
     CHANGE_KIND_LABELS,
     CHANGE_STATUS_LABELS,
     CONFLICT_KIND_LABELS,
+    CYCLE_STATUS_LABELS,
     METRIC_DOMAIN_LABELS,
     METRIC_TIER_LABELS,
     RUN_STATUS_LABELS,
@@ -17,7 +18,7 @@ from src.constants.enums import (
 from src.models.change_request import ChangeRequest
 from src.models.metric import Metric
 from src.models.run import Run
-from src.services import formula_service, graph_service, report_service
+from src.services import cycle_record_service, formula_service, graph_service, report_service
 from src.utils.csv_export import to_csv
 
 
@@ -81,6 +82,52 @@ def conflicts_csv(db: Session) -> bytes:
                 impact.get("core_count", 0),
                 " | ".join(impact.get("report_names", [])),
                 item.get("suggestion", ""),
+            ]
+        )
+    return to_csv(headers, rows)
+
+
+def _iso_text(value: str | None) -> str:
+    """ISO 时间戳 -> CSV 展示文本（与其他导出一样按存储时钟原样输出）。"""
+    return value.replace("T", " ").rstrip("Z") if value else ""
+
+
+def cycles_csv(db: Session) -> bytes:
+    """环处置台账：与总览 / 依赖图同一批状态（cycle_record_service）。"""
+    payload = cycle_record_service.list_records(db, limit=10000)
+    headers = [
+        "记录号", "状态", "环路径", "环上成员", "引用边", "严重度", "影响分",
+        "下游报表数", "核心报表数", "下游报表",
+        "首次发现运行", "首次发现时间", "最后确认运行", "最后确认时间",
+        "闭环运行", "闭环时间", "闭环操作人", "打断的边", "内容版本数",
+    ]
+    rows = []
+    for item in payload["items"]:
+        impact = item.get("impact") or {}
+        resolution = item.get("resolution") or {}
+        rows.append(
+            [
+                item["record_no"],
+                CYCLE_STATUS_LABELS.get(item["status"], item["status"]),
+                " → ".join(item["path"]),
+                " | ".join(item["members"]),
+                " | ".join(f"{edge.get('from')}→{edge.get('to')}" for edge in item["edges"]),
+                SEVERITY_LABELS.get(item["severity"], item["severity"]),
+                item["score"],
+                impact.get("report_count", 0),
+                impact.get("core_count", 0),
+                " | ".join(impact.get("report_names", [])),
+                item.get("first_seen_run") or "",
+                _iso_text(item.get("first_seen_at")),
+                item.get("last_seen_run") or "",
+                _iso_text(item.get("last_seen_at")),
+                item.get("resolved_run") or "",
+                _iso_text(item.get("resolved_at")),
+                item.get("resolved_by") or "",
+                " | ".join(
+                    f"{edge.get('from')}→{edge.get('to')}" for edge in resolution.get("broken_edges", [])
+                ),
+                item["revision_count"],
             ]
         )
     return to_csv(headers, rows)

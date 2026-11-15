@@ -28,8 +28,21 @@ def graph(db: Session = Depends(get_db), principal: dict = Depends(require_roles
 
 
 @router.get("/cycles")
-def cycles(db: Session = Depends(get_db), principal: dict = Depends(require_roles(*READ_ROLES))) -> dict:
-    return dependency_controller.cycles(db)
+def cycles(
+    status: str | None = None,
+    limit: int = Query(100, ge=1, le=400),
+    offset: int = Query(0),
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_roles(*READ_ROLES)),
+) -> dict:
+    return dependency_controller.cycles(db, status=status, limit=limit, offset=offset)
+
+
+@router.get("/cycles/{record_no}")
+def cycle_detail(
+    record_no: str, db: Session = Depends(get_db), principal: dict = Depends(require_roles(*READ_ROLES))
+) -> dict:
+    return dependency_controller.cycle_detail(db, record_no)
 
 
 @router.get("/impact")

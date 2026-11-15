@@ -14,6 +14,7 @@ ACTIONS: dict[str, str] = {
     "change.reject": "驳回变更单",
     "export.metrics": "导出指标清单",
     "export.conflicts": "导出冲突与影响面",
+    "export.cycles": "导出环处置台账",
     "export.changes": "导出变更单",
     "export.runs": "导出运行记录",
     "http.mutation": "写请求",

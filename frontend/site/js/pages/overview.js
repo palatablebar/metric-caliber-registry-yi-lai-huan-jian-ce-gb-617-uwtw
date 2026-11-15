@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { BRAND, ENUMS, badgeTone, can } from '../config.js';
+import { BRAND, ENUMS, badgeTone, can, cycleTone } from '../config.js';
 import { barList, cyclePath, emptyState, errorBox, errorMessage, esc, fmtTime, statStrip, table, trendChart } from '../ui.js';
 
 export const overviewPage = {
@@ -22,7 +22,7 @@ export const overviewPage = {
         { label: 'M · 指标登记', value: data.metrics_total, hint: '48 条口径卡片' },
         { label: 'R · 报表引用', value: data.reports_total, hint: `核心报表 ${data.core_reports} 张（权重 ×3）` },
         { label: 'C · 同名冲突', value: data.conflicts_total, hint: '同名但字段/过滤/聚合不同' },
-        { label: 'L · 依赖环', value: data.cycles_total, hint: data.cycle_paths[0] ? 'SCC 检出' : '暂无环' },
+        { label: 'L · 依赖环', value: data.cycles_total, hint: `未闭环 ${data.cycles_total} · 已闭环 ${data.cycles_resolved}` },
         { label: 'H · 高风险', value: data.high_risk, hint: '影响面 ≥ 核心报表级' },
         { label: 'A · 待审批', value: data.pending_changes, hint: '变更单等管理员批准' },
       ])}
@@ -71,17 +71,25 @@ export const overviewPage = {
       </section>
       <div class="grid-2">
         <section class="panel">
-          <div class="panel-head"><h2>依赖环路径</h2><span class="meta">tarjan scc</span></div>
+          <div class="panel-head"><h2>依赖环 · 处置状态</h2><span class="meta">cycle records</span></div>
           <div class="panel-body">
             ${
-              data.cycle_paths.length
-                ? `<div class="list-tight">${data.cycle_paths
+              data.cycle_records.length
+                ? `<div class="list-tight">${data.cycle_records
                     .map(
-                      (path) =>
-                        `<div>${cyclePath(path.split(' → '))}<div class="muted tiny" style="margin-top:6px">环上指标改一处即可打断引用链。</div></div>`,
+                      (record) =>
+                        `<div>${cyclePath(record.path.split(' → '))}
+                          <div class="muted tiny" style="margin-top:6px">
+                            <span class="badge ${cycleTone(record.status)}">${esc(ENUMS.cycleStatus[record.status] || record.status)}</span>
+                            ${esc(record.record_no)} · 首次发现 ${esc(record.first_seen_run || '—')} · 最后确认 ${fmtTime(record.last_seen_at)}
+                          </div>
+                        </div>`,
                     )
                     .join('')}</div>`
-                : emptyState({ title: '没有依赖环', hint: '当前依赖图是有向无环的。' })
+                : emptyState({
+                    title: '没有未闭环的依赖环',
+                    hint: data.cycles_resolved ? `已闭环 ${data.cycles_resolved} 条记录保存在环处置台账（依赖图页）。` : '当前依赖图是有向无环的。',
+                  })
             }
           </div>
         </section>

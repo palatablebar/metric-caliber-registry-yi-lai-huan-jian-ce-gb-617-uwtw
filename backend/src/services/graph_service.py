@@ -1,12 +1,16 @@
-"""依赖图服务：把数据库里的指标/公式/报表装配成算法 B 的纯 dict 输入。"""
+"""依赖图服务：把数据库里的指标/公式/报表装配成算法 B 的纯 dict 输入。
+
+环的读取统一走 cycle_record_service（校验运行 reconcile 后的台账），
+总览 / 依赖图 / 导出看到的是同一批处置状态。
+"""
 from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.constants.enums import METRIC_DOMAIN_LABELS
+from src.constants.enums import METRIC_DOMAIN_LABELS, Severity
 from src.models.metric import Metric
-from src.services import formula_service, graph_analysis, report_service
+from src.services import cycle_record_service, formula_service, graph_analysis, report_service
 from src.utils.errors import AppError
 
 
@@ -49,20 +53,43 @@ def find_conflicts(db: Session) -> list[dict]:
 
 
 def find_cycles(db: Session) -> list[dict]:
-    metrics, reports_index, _ = collect_inputs(db)
-    return graph_analysis.find_cycles(metrics, reports_index)
+    """未闭环的环处置记录（与总览 / 依赖图 / 导出同一批状态）。"""
+    return cycle_record_service.open_cycles(db)
 
 
 def summary(db: Session) -> dict:
     metrics, reports_index, _ = collect_inputs(db)
-    return graph_analysis.summarize(metrics, reports_index)
+    conflicts = graph_analysis.find_conflicts(metrics, reports_index)
+    cycles = cycle_record_service.open_cycles(db)
+    parse_errors = [metric["code"] for metric in metrics if metric.get("parse_status") == "error"]
+    severity_counter = {Severity.HIGH.value: 0, Severity.MEDIUM.value: 0, Severity.LOW.value: 0}
+    for item in conflicts + cycles:
+        severity_counter[item["severity"]] = severity_counter.get(item["severity"], 0) + 1
+    record_stats = cycle_record_service.stats(db)
+    return {
+        "metrics_total": len(metrics),
+        "conflicts_total": len(conflicts),
+        "cycles_total": len(cycles),
+        "cycles_open": record_stats["open"],
+        "cycles_resolved": record_stats["resolved"],
+        "parse_errors": parse_errors,
+        "parse_error_count": len(parse_errors),
+        "severity": severity_counter,
+        "conflicts": conflicts,
+        "cycles": cycles,
+        "edge_count": sum(len(refs) for refs in graph_analysis.build_dep_map(metrics).values()),
+    }
 
 
 def graph(db: Session) -> dict:
     metrics, reports_index, _ = collect_inputs(db)
     dep_map = graph_analysis.build_dep_map(metrics)
-    cycles = graph_analysis.find_cycles(metrics, reports_index)
+    cycles = cycle_record_service.open_cycles(db)
     in_cycle = {code for cycle in cycles for code in cycle["members"]}
+    # 当前实时图与台账是否一致：改了口径还没跑校验时提示，状态仍以台账为准
+    live_fingerprints = {cycle["fingerprint"] for cycle in graph_analysis.find_cycles(metrics, reports_index)}
+    recorded_fingerprints = {cycle["fingerprint"] for cycle in cycles}
+    stale = live_fingerprints != recorded_fingerprints
     report_codes: dict[str, list[str]] = {
         code: [report["code"] for report in reports] for code, reports in reports_index.items()
     }
@@ -97,6 +124,7 @@ def graph(db: Session) -> dict:
         "edges": edges,
         "dep_edges": [edge for edge in edges if edge["kind"] == "metric"],
         "cycles": cycles,
+        "stale": stale,
         "stats": {
             "nodes": len(nodes),
             "dep_edges": sum(len(refs) for refs in dep_map.values()),

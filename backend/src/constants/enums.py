@@ -148,6 +148,36 @@ SEVERITY_LABELS: dict[str, str] = {
 SEVERITY_ORDER: list[str] = [Severity.HIGH.value, Severity.MEDIUM.value, Severity.LOW.value]
 
 
+class CycleStatus(StrEnum):
+    """环处置记录状态：未闭环 / 已闭环（闭环后同一 fingerprint 再现会重开）。"""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+CYCLE_STATUS_LABELS: dict[str, str] = {
+    CycleStatus.OPEN.value: "未闭环",
+    CycleStatus.RESOLVED.value: "已闭环",
+}
+
+
+class CycleEvent(StrEnum):
+    """环处置事件：首次发现 / 校验确认 / 重新打开 / 闭环。"""
+
+    DETECTED = "detected"
+    CONFIRMED = "confirmed"
+    REOPENED = "reopened"
+    RESOLVED = "resolved"
+
+
+CYCLE_EVENT_LABELS: dict[str, str] = {
+    CycleEvent.DETECTED.value: "首次发现",
+    CycleEvent.CONFIRMED.value: "校验确认",
+    CycleEvent.REOPENED.value: "重新打开",
+    CycleEvent.RESOLVED.value: "闭环",
+}
+
+
 class TriggerKind(StrEnum):
     MANUAL = "manual"
     SCHEDULE = "schedule"

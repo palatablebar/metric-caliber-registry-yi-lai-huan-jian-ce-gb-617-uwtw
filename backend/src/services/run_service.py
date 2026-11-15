@@ -1,4 +1,4 @@
-"""校验运行服务：算法 A 解析全部口径 → 重建依赖图 → 算法 B 环检测 + 冲突 → 落统计。"""
+"""校验运行服务：算法 A 解析全部口径 → 重建依赖图 → 算法 B 环检测 + 冲突 → 环台账 reconcile → 落统计。"""
 from __future__ import annotations
 
 from sqlalchemy import func, select
@@ -8,7 +8,14 @@ from src.config.settings import settings
 from src.models.formula import Formula
 from src.models.metric import Metric
 from src.models.run import Run
-from src.services import dependency_service, dsl_parser, formula_service, graph_analysis, graph_service
+from src.services import (
+    cycle_record_service,
+    dependency_service,
+    dsl_parser,
+    formula_service,
+    graph_analysis,
+    graph_service,
+)
 from src.utils.errors import not_found
 from src.utils.timeutil import iso_utc, local_now, utcnow
 
@@ -52,6 +59,13 @@ def execute_run(db: Session, run: Run) -> Run:
         dependency_stats = dependency_service.rebuild(db, metrics, parsed_by_code)
         payloads, reports_index, _ = graph_service.collect_inputs(db)
         summary = graph_analysis.summarize(payloads, reports_index)
+        cycle_stats = cycle_record_service.reconcile(
+            db,
+            run=run,
+            cycles=summary["cycles"],
+            dep_map=graph_analysis.build_dep_map(payloads),
+            operator_email=run.operator_email,
+        )
 
         issue_count = len(summary["conflicts"]) + len(summary["cycles"]) + summary["parse_error_count"]
         run.input_count = len(metrics)
@@ -67,6 +81,7 @@ def execute_run(db: Session, run: Run) -> Run:
             "dep_edges": dependency_stats["counts"],
             "high_conflicts": [item["name"] for item in summary["conflicts"] if item["severity"] == "high"],
             "cycle_paths": [" → ".join(item["path"]) for item in summary["cycles"]],
+            "cycle_records": cycle_stats,
         }
         run.status = "success" if metrics else "partial"
         run.log_text = (
@@ -74,7 +89,9 @@ def execute_run(db: Session, run: Run) -> Run:
             f"依赖边 {dependency_stats['total']} 条（指标 {dependency_stats['counts']['metric']} / "
             f"字段 {dependency_stats['counts']['field']} / 报表 {dependency_stats['counts']['report']}）；"
             f"同名冲突 {summary['conflicts_total']} 处，依赖环 {summary['cycles_total']} 个；"
-            f"新增边 {dependency_stats['added']}，清理边 {dependency_stats['removed']}"
+            f"新增边 {dependency_stats['added']}，清理边 {dependency_stats['removed']}；"
+            f"环台账：新发现 {cycle_stats['new']}，确认 {cycle_stats['confirmed']}，"
+            f"闭环 {cycle_stats['resolved']}，重开 {cycle_stats['reopened']}"
         )
     except Exception as exc:  # noqa: BLE001 - 运行失败要留痕，不抛 500
         run.status = "failed"

@@ -7,6 +7,7 @@ const state = { status: '' };
 const EXPORTS = [
   ['/api/exports/metrics.csv', 'metrics.csv', '指标清单', '48 条口径 + 解析结果 + 下游报表'],
   ['/api/exports/conflicts.csv', 'conflicts.csv', '冲突与影响面', '同名冲突、差异字段、严重度'],
+  ['/api/exports/cycles.csv', 'cycles.csv', '环处置台账', '每个环的首次发现 / 最后确认 / 闭环结果'],
   ['/api/exports/change-requests.csv', 'change-requests.csv', '变更单', '影响面与审批结论'],
   ['/api/exports/runs.csv', 'runs.csv', '校验运行记录', '解析失败、环、冲突统计'],
 ];
@@ -131,6 +132,7 @@ export const changesPage = {
                   <dt>状态</dt><dd>${esc(ENUMS.runStatus[latest.status] || latest.status)}</dd>
                   <dt>输入 / 问题</dt><dd>${esc(latest.input_count)} 条口径 → ${esc(latest.output_count)} 条问题</dd>
                   <dt>冲突 / 环</dt><dd>${esc(latest.metrics?.conflicts_total ?? 0)} 处冲突 / ${esc(latest.metrics?.cycles_total ?? 0)} 个环</dd>
+                  <dt>环台账</dt><dd>新发现 ${esc(latest.metrics?.cycle_records?.new ?? 0)} · 确认 ${esc(latest.metrics?.cycle_records?.confirmed ?? 0)} · 闭环 ${esc(latest.metrics?.cycle_records?.resolved ?? 0)} · 重开 ${esc(latest.metrics?.cycle_records?.reopened ?? 0)}</dd>
                   <dt>依赖边</dt><dd class="mono">指标 ${esc(latest.metrics?.dep_edges?.metric ?? 0)} · 字段 ${esc(latest.metrics?.dep_edges?.field ?? 0)} · 报表 ${esc(latest.metrics?.dep_edges?.report ?? 0)}</dd>
                   <dt>日志</dt><dd class="tiny">${esc(latest.log_text || '—')}</dd>
                 </dl>`

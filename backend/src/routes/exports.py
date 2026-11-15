@@ -25,6 +25,13 @@ def conflicts_csv(
     return export_controller.conflicts_csv(db, principal, request)
 
 
+@router.get("/cycles.csv")
+def cycles_csv(
+    request: Request, db: Session = Depends(get_db), principal: dict = Depends(require_roles(*EXPORT_ROLES))
+):
+    return export_controller.cycles_csv(db, principal, request)
+
+
 @router.get("/change-requests.csv")
 def changes_csv(
     request: Request, db: Session = Depends(get_db), principal: dict = Depends(require_roles(*EXPORT_ROLES))

@@ -14,6 +14,7 @@ from src.models.dependency import Dependency  # noqa: E402
 from src.models.report import Report  # noqa: E402
 from src.models.change_request import ChangeRequest  # noqa: E402
 from src.models.run import Run  # noqa: E402
+from src.models.cycle_record import CycleRecord, CycleRecordEvent, CycleRecordRevision  # noqa: E402
 
 __all__ = [
     "Base",
@@ -25,4 +26,7 @@ __all__ = [
     "Report",
     "ChangeRequest",
     "Run",
+    "CycleRecord",
+    "CycleRecordRevision",
+    "CycleRecordEvent",
 ]

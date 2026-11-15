@@ -1,4 +1,4 @@
-"""导出控制器：四张 CSV + 审计。"""
+"""导出控制器：五张 CSV + 审计。"""
 from __future__ import annotations
 
 from fastapi import Request, Response
@@ -32,6 +32,12 @@ def metrics_csv(db: Session, principal: dict, request: Request) -> Response:
 def conflicts_csv(db: Session, principal: dict, request: Request) -> Response:
     return _respond(
         db, export_service.conflicts_csv(db), "conflicts.csv", "export.conflicts", "conflict", principal, request
+    )
+
+
+def cycles_csv(db: Session, principal: dict, request: Request) -> Response:
+    return _respond(
+        db, export_service.cycles_csv(db), "cycles.csv", "export.cycles", "cycle_record", principal, request
     )
 
 

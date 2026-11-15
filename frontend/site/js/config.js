@@ -67,6 +67,8 @@ export const ENUMS = {
   metricStatus: { draft: '草稿', active: '生效中', deprecated: '已下线' },
   parseStatus: { ok: '解析通过', error: '解析失败' },
   dependencyKind: { metric: '指标引用', field: '字段依赖', report: '报表引用' },
+  cycleStatus: { open: '未闭环', resolved: '已闭环' },
+  cycleEvent: { detected: '首次发现', confirmed: '校验确认', reopened: '重新打开', resolved: '闭环' },
   trigger: { manual: '手动', schedule: '定时', seed: '初始化' },
   runStatus: { queued: '排队中', running: '执行中', success: '成功', partial: '部分成功', failed: '失败' },
 };
@@ -81,6 +83,10 @@ export function badgeTone(severity) {
 
 export function changeTone(status) {
   return { pending: 'pending', approved: 'ok', rejected: 'danger' }[status] || 'info';
+}
+
+export function cycleTone(status) {
+  return { open: 'danger', resolved: 'ok' }[status] || 'info';
 }
 
 export function parseTone(status) {
